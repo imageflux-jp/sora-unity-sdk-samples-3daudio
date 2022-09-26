@@ -311,8 +311,8 @@ public class SoraSample : MonoBehaviour
         // また、このコールバックの範囲外ではポインタは無効になるので必要に応じてデータをコピーして利用すること。
         sora.OnCapturerFrame = (frame) =>
         {
-            // var vfb = frame.video_frame_buffer;
-            // Debug.LogFormat("OnCapturerFrame: type={0} width={1} height={2}", vfb.type, vfb.width, vfb.height);
+            var vfb = frame.video_frame_buffer;
+            Debug.LogFormat("OnCapturerFrame: type={0} width={1} height={2}", vfb.type, vfb.width, vfb.height);
 
             // // I420 の映像データを byte[] にコピーする
             // if (vfb.type == SoraConf.VideoFrameBuffer.Type.kI420)
