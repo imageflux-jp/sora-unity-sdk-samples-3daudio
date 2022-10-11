@@ -28,8 +28,23 @@ public class SoraSample : MonoBehaviour
 
     // マルチストリームで利用する
     Dictionary<uint, GameObject> tracks = new Dictionary<uint, GameObject>();
+    Dictionary<string, GameObject> audioTracks = new Dictionary<string, GameObject>();
+    Dictionary<string, AudioTrackBuffer> audioTrackBuffers = new Dictionary<string, AudioTrackBuffer>();
     public GameObject scrollViewContent;
     public GameObject baseContent;
+    public GameObject audioBaseContent;
+
+    [Serializable]
+    class AudioPosition
+    {
+        public string id = "";
+        public string connectionId = "";
+        public string audioTrackId = "";
+        public string color = "";
+        public float x = 0;
+        public float y = 0;
+        public float z = 0;
+    }
 
     // 以下共通
     public string signalingUrl = "";
@@ -52,7 +67,7 @@ public class SoraSample : MonoBehaviour
     public bool unityAudioInput = false;
     public AudioSource audioSourceInput;
     public bool unityAudioOutput = false;
-    public AudioSource audioSourceOutput;
+    // public AudioSource audioSourceOutput;
 
     public string videoCapturerDevice = "";
     public string audioRecordingDevice = "";
@@ -126,9 +141,11 @@ public class SoraSample : MonoBehaviour
         }
     }
 
-    Queue<short[]> audioBuffer = new Queue<short[]>();
-    int audioBufferSamples = 0;
-    int audioBufferPosition = 0;
+    public class AudioTrackBuffer {
+        public Queue<short[]> audioBuffer = new Queue<short[]>();
+        public int audioBufferSamples = 0;
+        public int audioBufferPosition = 0;
+    }
 
     void DumpDeviceInfo(string name, Sora.DeviceInfo[] infos)
     {
@@ -160,6 +177,8 @@ public class SoraSample : MonoBehaviour
         started = false;
         StartCoroutine(Render());
         StartCoroutine(GetStats());
+
+        OnClickStart();
     }
 
     IEnumerator Render()
@@ -275,6 +294,74 @@ public class SoraSample : MonoBehaviour
                     tracks.Remove(trackId);
                 }
             };
+            sora.OnAddAudioTrack = (audioTrackId, connectionId) =>
+            {
+                Debug.LogFormat("OnAddAudioTrack: audioTrackId={0}, connectionId={1}", audioTrackId, connectionId);
+                var obj = GameObject.Instantiate(audioBaseContent, Vector3.zero, Quaternion.identity);
+                obj.name = string.Format("audioTrack {0}", audioTrackId);
+                obj.transform.Rotate(new Vector3(0, 1, 0), 180);
+                //obj.transform.SetParent(scrollViewContent.transform);
+                obj.SetActive(true);
+                audioTracks.Add(connectionId, obj);
+
+                audioTrackBuffers.Add(audioTrackId, new AudioTrackBuffer());
+
+                var audioClip = AudioClip.Create(audioTrackId, 480000, 1, 48000, true, (data) =>
+                {
+                    if(audioTrackBuffers.TryGetValue(audioTrackId, out var trackbuf)) {
+                        lock (trackbuf.audioBuffer)
+                        {
+                            if (trackbuf.audioBuffer.Count == 0 || trackbuf.audioBufferSamples < data.Length)
+                            {
+                                for (int i = 0; i < data.Length; i++)
+                                {
+                                    data[i] = 0.0f;
+                                }
+                                return;
+                            }
+
+                            var p = trackbuf.audioBuffer.Peek();
+                            for (int i = 0; i < data.Length; i++)
+                            {
+                                while (trackbuf.audioBufferPosition >= p.Length)
+                                {
+                                    trackbuf.audioBuffer.Dequeue();
+                                    p = trackbuf.audioBuffer.Peek();
+                                    trackbuf.audioBufferPosition = 0;
+                                }
+                                data[i] = p[trackbuf.audioBufferPosition] / 32768.0f;
+                                ++trackbuf.audioBufferPosition;
+                            }
+                            trackbuf.audioBufferSamples -= data.Length;
+                        }
+                    }
+                });
+                var audioOutput = obj.AddComponent<AudioSource>();
+                audioOutput.spatialBlend = 1.0f;
+                audioOutput.loop = true;
+                audioOutput.clip = audioClip;
+                audioOutput.Play();
+                
+            };
+            sora.OnRemoveAudioTrack = (audioTrackId, connectionId) =>
+            {
+                Debug.LogFormat("OnRemoveAudioTrack: audioTrackId={0}, connectionId={1}", audioTrackId, connectionId);
+                if (audioTracks.ContainsKey(connectionId))
+                {
+                    GameObject.Destroy(audioTracks[connectionId]);
+                    audioTracks.Remove(connectionId);
+                }
+            };
+            sora.OnHandleAudioTrack = (buf, samples, channels, audioTrackId) =>
+            {
+                if(audioTrackBuffers.TryGetValue(audioTrackId, out var trackbuf)){
+                    lock (trackbuf.audioBuffer)
+                    {
+                        trackbuf.audioBuffer.Enqueue(buf);
+                        trackbuf.audioBufferSamples += samples;
+                    }
+                }
+            };
         }
         sora.OnNotify = (json) =>
         {
@@ -285,6 +372,7 @@ public class SoraSample : MonoBehaviour
             Debug.LogFormat("OnPush: {0}", json);
         };
         // これは別スレッドからやってくるので注意すること
+        /*
         sora.OnHandleAudio = (buf, samples, channels) =>
         {
             lock (audioBuffer)
@@ -293,8 +381,27 @@ public class SoraSample : MonoBehaviour
                 audioBufferSamples += samples;
             }
         };
+        */
         sora.OnMessage = (label, data) =>
         {
+            if(label=="#position"){
+                var audioPosition = JsonUtility.FromJson<AudioPosition>(System.Text.Encoding.UTF8.GetString(data));
+                Debug.LogFormat("audioTrackId="+audioPosition.audioTrackId);
+                foreach (var track in audioTracks)
+                {
+                    if(track.Key==audioPosition.connectionId){
+                        if(ColorUtility.TryParseHtmlString(audioPosition.color,out var color)){
+                            var renderers = track.Value.GetComponentsInChildren(typeof(Renderer));
+                            foreach(Renderer childRenderer in renderers) {
+                                if(childRenderer.name.Contains("eye")) continue;
+                                childRenderer.material.color = color;
+                            }
+                        }
+                        track.Value.transform.position = Camera.main.transform.position + new Vector3(audioPosition.x, audioPosition.y, audioPosition.z);
+                    }
+                }
+                return;
+            }
             Debug.LogFormat("OnMessage: label={0} data={1}", label, System.Text.Encoding.UTF8.GetString(data));
         };
         sora.OnDisconnect = (code, message) =>
@@ -333,6 +440,7 @@ public class SoraSample : MonoBehaviour
 
         if (unityAudioOutput)
         {
+            /*
             var audioClip = AudioClip.Create("AudioClip", 480000, 1, 48000, true, (data) =>
             {
                 lock (audioBuffer)
@@ -363,6 +471,7 @@ public class SoraSample : MonoBehaviour
             });
             audioSourceOutput.clip = audioClip;
             audioSourceOutput.Play();
+            */
         }
 
         if (unityAudioInput && !Recvonly)
@@ -395,6 +504,16 @@ public class SoraSample : MonoBehaviour
                 GameObject.Destroy(track.Value);
             }
             tracks.Clear();
+            foreach (var track in audioTracks)
+            {
+                if (unityAudioOutput)
+                {
+                    // FIXME
+                    // audioSourceOutput.Stop();
+                }
+                GameObject.Destroy(track.Value);
+            }
+            audioTracks.Clear();
         }
         if (unityAudioInput && !Recvonly)
         {
@@ -404,7 +523,7 @@ public class SoraSample : MonoBehaviour
 
         if (unityAudioOutput)
         {
-            audioSourceOutput.Stop();
+            // audioSourceOutput.Stop();
         }
     }
     void DisposeSora()
